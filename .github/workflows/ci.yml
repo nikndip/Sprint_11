@@ -1,0 +1,69 @@
+name: Test and publish
+
+on:
+  pull_request:
+  push:
+    branches:
+      - '**'
+    tags:
+      - '*'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Check code and run tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check code
+        run: go vet ./...
+      - name: Run tests
+        run: go test -race -count=1 ./...
+
+  publish:
+    name: Publish and verify Docker image
+    needs: test
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Docker image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/sprint11
+          tags: type=ref,event=tag
+          flavor: latest=false
+      - name: Build and publish
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Pull and run published image
+        env:
+          IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/sprint11
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker pull "$IMAGE_NAME@$IMAGE_DIGEST"
+          docker run --rm "$IMAGE_NAME@$IMAGE_DIGEST" > app.log 2>&1
+          cat app.log
+          if grep -Eq 'SQL logic error|no such table|unable to open database|panic:' app.log; then
+            exit 1
+          fi
+          grep -q 'Новая посылка' app.log
+          grep -q 'новый статус: sent' app.log
